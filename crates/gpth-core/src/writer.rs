@@ -2,12 +2,14 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use indicatif::{ProgressBar, ProgressStyle};
 use zip::ZipArchive;
 
 use crate::media::Media;
+use crate::ThrottledProgress;
 
+/// Assign output paths, then write files.
 pub fn write_output(
     media: &[Media],
     zip_paths: &[String],
@@ -15,6 +17,7 @@ pub fn write_output(
     divide_to_dates: bool,
     album_dest: Option<&str>,
     album_link: bool,
+    progress: &ThrottledProgress,
 ) -> anyhow::Result<Vec<PathBuf>> {
     fs::create_dir_all(output_dir)?;
 
@@ -68,12 +71,8 @@ pub fn write_output(
     }
 
     // Phase 2: Write files in parallel
-    let pb = ProgressBar::new(media.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{bar:40}] {pos}/{len} writing files")
-            .unwrap(),
-    );
+    let total = media.len() as u64;
+    let counter = AtomicU64::new(0);
 
     let num_threads = rayon::current_num_threads();
     let work: Vec<(usize, &Media, &PathBuf)> = media
@@ -83,7 +82,6 @@ pub fn write_output(
         .map(|(i, (m, d))| (i, m, d))
         .collect();
 
-    // Group by zip_index first, then chunk within each zip for parallel decompression
     use std::collections::HashMap;
     let mut by_zip: HashMap<usize, Vec<(usize, &Media, &PathBuf)>> = HashMap::new();
     for &(i, m, d) in &work {
@@ -99,8 +97,9 @@ pub fn write_output(
             let handles: Vec<_> = chunks
                 .into_iter()
                 .map(|chunk| {
-                    let pb = &pb;
+                    let counter = &counter;
                     let zip_path = zip_path;
+                    let progress = &progress;
                     s.spawn(move || -> anyhow::Result<()> {
                         let file = File::open(zip_path)?;
                         let mut archive = ZipArchive::new(file)?;
@@ -117,7 +116,8 @@ pub fn write_output(
                                 }
                             }
 
-                            pb.inc(1);
+                            let current = counter.fetch_add(1, Ordering::Relaxed);
+                            progress.report("write", current, total, "Writing files");
                         }
                         Ok(())
                     })
@@ -130,9 +130,6 @@ pub fn write_output(
             Ok(())
         })?;
     }
-
-    pb.finish_and_clear();
-    eprintln!("Wrote {} files to {}", media.len(), output_dir.display());
 
     // Phase 3: Album output (if --album-dest album)
     if album_dest == Some("album") {
@@ -159,7 +156,6 @@ fn write_album_folders(
             let album_file = album_dir.join(&m.filename);
 
             if use_symlinks {
-                // Create relative symlink from album_file -> dest
                 let rel = pathdiff::diff_paths(dest, &album_dir)
                     .unwrap_or_else(|| dest.to_path_buf());
                 #[cfg(unix)]

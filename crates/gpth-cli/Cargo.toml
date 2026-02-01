@@ -1,0 +1,13 @@
+[package]
+name = "gpth-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gpth-rs-cli"
+path = "src/main.rs"
+
+[dependencies]
+gpth-core = { path = "../gpth-core" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

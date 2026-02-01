@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Photos Takeout Helper</title>
+  <link rel="stylesheet" href="/src-frontend/styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>gpth-rs</h1>
+      <span class="subtitle">Google Photos Takeout Helper</span>
+    </header>
+
+    <!-- Input ZIP files -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Input</span>
+        <button id="add-zips" class="btn btn-primary btn-sm" type="button">+ Add ZIP</button>
+      </div>
+      <div id="drop-zone" class="drop-zone">
+        <div id="zip-empty" class="empty-state">Drop ZIP files here or click + Add ZIP</div>
+        <ul id="zip-list"></ul>
+      </div>
+    </section>
+
+    <!-- Output directory -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Output</span>
+      </div>
+      <div class="row">
+        <input id="output-dir" type="text" readonly placeholder="Select output directory...">
+        <button id="select-output" class="btn btn-secondary" type="button">Browse</button>
+      </div>
+    </section>
+
+    <!-- Options -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Options</span>
+      </div>
+      <div class="options-row">
+        <label class="option-chip" title="Organize into YYYY/MM subdirectories">
+          <input type="checkbox" id="divide-dates">
+          <span>Date folders</span>
+        </label>
+        <label class="option-chip" title="Exclude -edited, -effects variants">
+          <input type="checkbox" id="skip-extras">
+          <span>Skip derivatives</span>
+        </label>
+        <label class="option-chip" title="Use only JSON/EXIF metadata, no filename guessing">
+          <input type="checkbox" id="no-guess">
+          <span>No guess</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Run -->
+    <button id="run-btn" class="btn btn-accent btn-full" type="button">Run</button>
+
+    <!-- Progress -->
+    <section id="progress-section" class="section" hidden>
+      <div class="progress-header">
+        <span id="progress-stage">Preparing...</span>
+        <span id="progress-pct">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div id="progress-detail" class="progress-detail"></div>
+    </section>
+
+    <!-- Result -->
+    <section id="result-section" class="section result" hidden>
+      <div class="result-icon">&#10003;</div>
+      <p id="result-text"></p>
+    </section>
+
+    <pre id="log-output" hidden></pre>
+  </div>
+  <script type="module" src="/src-frontend/main.ts"></script>
+</body>
+</html>

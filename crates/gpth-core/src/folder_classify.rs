@@ -69,17 +69,17 @@ pub fn is_in_year_folder(zip_path: &str) -> bool {
 /// (i.e. `Takeout/Google Photos/<name>/...` where `<name>` is not a year folder).
 pub fn extract_album_name(zip_path: &str) -> Option<String> {
     let parts: Vec<&str> = zip_path.split('/').collect();
-    // Look for "Google Photos" or "Google Фото" etc. followed by a folder name
     for i in 0..parts.len().saturating_sub(2) {
-        if parts[i].starts_with("Google") && parts[i].contains("hoto")
-            || parts[i].starts_with("Google") && parts[i].contains("ото")
-            || parts[i].starts_with("Google") && parts[i].contains("フォト")
-            || parts[i].starts_with("Google") && parts[i].contains("照片")
-            || parts[i].starts_with("Google") && parts[i].contains("사진")
+        let p = parts[i];
+        if p.starts_with("Google")
+            && (p.contains("hoto")
+                || p.contains("ото")
+                || p.contains("フォト")
+                || p.contains("照片")
+                || p.contains("사진"))
         {
             let folder_name = parts[i + 1];
             if !folder_name.is_empty() && !is_year_folder(folder_name) {
-                // Make sure there's at least a file after the folder name
                 if i + 2 < parts.len() {
                     return Some(folder_name.to_string());
                 }

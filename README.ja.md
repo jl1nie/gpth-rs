@@ -4,63 +4,101 @@
 
 Google Takeout の zip ファイルを**事前展開なしで直接処理**し、メディアファイルをストリーミングで読み出して整理されたフォルダに出力します。
 
+**GUI アプリ**（Tauri）と**CLI ツール**の両方を提供。
+
 [English README](README.md)
 
 ## 特徴
 
 - **事前展開不要** - zip ファイルを直接読み込み
+- **GUI & CLI** - ドラッグ&ドロップ対応のデスクトップアプリ、またはコマンドラインツール
 - **並列処理** - rayon による EXIF 読み取り・ハッシュ計算・ファイル書き出しの並列化
 - **日付抽出** - JSON メタデータ、EXIF、ファイル名パターン推測（優先順）
 - **重複検出** - ファイルサイズ + SHA-256 による重複除去
 - **多言語フォルダ認識** - Google Takeout の年フォルダを 32 以上の言語パターンで認識
 - **派生画像フィルタ** - `-edited`、`-bearbeitet`、`-編集済み` 等をスキップ
 - **日付別整理** - YYYY/MM サブフォルダへの出力に対応
+- **アルバム対応** - 名前付きアルバムフォルダの処理、アルバムディレクトリまたは JSON インデックスとして出力
 
 ## インストール
 
-### ソースから
+### ビルド済みバイナリ
+
+[Releases](https://github.com/nickel-and-dime/gpth-rs/releases) ページからダウンロード:
+
+- `gpth-rs.exe` — GUI（Windows）
+- `gpth-rs-cli.exe` — CLI（Windows）
+
+### ソースからビルド
+
+必要: Rust ツールチェイン、Node.js（GUI のみ）
 
 ```sh
-cargo install --path .
+# CLI のみ
+cargo build --release -p gpth-cli
+
+# GUI（Node.js が必要）
+npm install
+npx tauri build
 ```
 
-### ビルド
+バイナリの出力先:
+- `target/release/gpth-rs-cli.exe`（CLI）
+- `target/release/gpth-rs.exe`（GUI）
 
-```sh
-cargo build --release
-```
+## GUI の使い方
 
-バイナリは `target/release/gpth-rs`（Windows では `gpth-rs.exe`）に生成されます。
+1. `gpth-rs.exe` を起動
+2. ZIP ファイルをウィンドウにドラッグ&ドロップ、または **+ Add ZIP** をクリック
+3. **Browse** をクリックして出力先ディレクトリを選択
+4. 必要に応じてオプションを切り替え（ホバーで説明表示）
+5. **Run** をクリック
 
-## 使い方
+## CLI の使い方
 
 ### 基本
 
 ```sh
-gpth-rs -o 出力先 takeout-*.zip
+gpth-rs-cli -o 出力先 takeout-*.zip
 ```
 
 ### 日付別サブフォルダに整理
 
 ```sh
-gpth-rs -o 出力先 --divide-to-dates takeout-*.zip
+gpth-rs-cli -o 出力先 --divide-to-dates takeout-*.zip
+```
+
+### アルバムを処理
+
+```sh
+gpth-rs-cli -o 出力先 --albums takeout-*.zip
+```
+
+### アルバムを別フォルダにシンボリックリンクで出力
+
+```sh
+gpth-rs-cli -o 出力先 --albums --album-dest album --album-link --divide-to-dates takeout-*.zip
 ```
 
 ### 全オプション
 
 ```
-gpth-rs [OPTIONS] -o <OUTPUT> <ZIP_FILES>...
+gpth-rs-cli [OPTIONS] -o <OUTPUT> <ZIP_FILES>...
 
 引数:
-  <ZIP_FILES>...       Google Takeout の zip ファイル
+  <ZIP_FILES>...              Google Takeout の zip ファイル
 
 オプション:
-  -o, --output <DIR>   出力ディレクトリ（必須）
-  --divide-to-dates    YYYY/MM サブフォルダに分割
-  --skip-extras        派生画像をスキップ（-edited, -effects 等）
-  --no-guess           ファイル名からの日付推測を無効化
-  -h, --help           ヘルプを表示
-  -V, --version        バージョンを表示
+  -o, --output <DIR>          出力ディレクトリ（必須）
+  --divide-to-dates           YYYY/MM サブフォルダに分割
+  --skip-extras               派生画像をスキップ（-edited, -effects 等）
+  --no-guess                  ファイル名からの日付推測を無効化
+  --albums                    アルバムフォルダも処理する
+  --album-dest <MODE>         アルバム出力モード: "year"（デフォルト）または "album"
+  --album-link                コピーではなくシンボリックリンクを使用（--album-dest album 時のみ）
+  --album-json <PATH>         albums.json の出力パス（デフォルト: <output>/albums.json）
+  -h, --help                  ヘルプを表示
+  -V, --version               バージョンを表示
 ```
 
 ### 使用例
@@ -68,13 +106,13 @@ gpth-rs [OPTIONS] -o <OUTPUT> <ZIP_FILES>...
 複数の zip ファイルを処理:
 
 ```sh
-gpth-rs -o ~/Photos takeout-20240101T000000Z-001.zip takeout-20240101T000000Z-002.zip
+gpth-rs-cli -o ~/Photos takeout-20240101T000000Z-001.zip takeout-20240101T000000Z-002.zip
 ```
 
 編集済み画像をスキップして日付別に整理:
 
 ```sh
-gpth-rs -o ~/Photos --divide-to-dates --skip-extras takeout-*.zip
+gpth-rs-cli -o ~/Photos --divide-to-dates --skip-extras takeout-*.zip
 ```
 
 ## 出力構造
@@ -104,15 +142,64 @@ output/
     └── ...
 ```
 
+### `--albums --album-dest album --divide-to-dates` 指定時
+
+```
+output/
+├── 2023/
+│   └── 07/
+│       ├── IMG_001.jpg
+│       └── IMG_002.jpg
+├── albums/
+│   ├── 旅行2023/
+│   │   ├── IMG_001.jpg      (コピーまたはシンボリックリンク)
+│   │   └── IMG_002.jpg
+│   └── 家族/
+│       └── DSC_100.jpg
+├── date-unknown/
+│   └── ...
+└── albums.json
+```
+
+### albums.json
+
+`--albums` を有効にすると、アルバム名と出力ファイルの対応を記述した `albums.json` が出力されます:
+
+```json
+{
+  "albums": {
+    "旅行2023": {
+      "files": [
+        { "filename": "IMG_001.jpg", "output_path": "2023/07/IMG_001.jpg" },
+        { "filename": "IMG_002.jpg", "output_path": "2023/07/IMG_002.jpg" }
+      ]
+    }
+  }
+}
+```
+
 ## 処理の流れ
 
-1. **スキャン** - 全 zip エントリを読み込み、年フォルダ内のメディアファイルと JSON メタデータを収集
+1. **スキャン** - 全 zip エントリを読み込み、年フォルダ内のメディアファイルと JSON メタデータを収集。`--albums` 指定時はアルバムフォルダのエントリも収集。
 2. **日付抽出** - 以下の優先順で日付を取得:
    - Google JSON メタデータ (`photoTakenTime.timestamp`)
    - EXIF (`DateTimeOriginal`, `DateTimeDigitized`, `DateTime`)
    - ファイル名パターン (`IMG_20230101_120000`, `Screenshot_20230101-120000` 等)
-3. **重複除去** - ファイルサイズでグループ化 → SHA-256 ハッシュで重複を除去
-4. **書き出し** - zip から1ファイルずつストリーミングで出力、ファイル更新日時を設定
+3. **アルバムマージ**（`--albums` 指定時）- アルバムエントリをファイル名+サイズで年フォルダのメディアとマッチング。マッチしないアルバム専用ファイルは新規メディアとして追加。
+4. **重複除去** - ファイルサイズでグループ化 → SHA-256 ハッシュで重複を除去
+5. **書き出し** - zip から1ファイルずつストリーミングで出力、ファイル更新日時を設定。オプションでアルバムフォルダと `albums.json` を出力。
+
+## プロジェクト構成
+
+```
+gpth-rs/
+├── crates/
+│   ├── gpth-core/       # コアライブラリ（処理パイプライン）
+│   └── gpth-cli/        # CLI バイナリ（gpth-rs-cli）
+├── src-tauri/           # Tauri GUI バックエンド（gpth-rs）
+├── src-frontend/        # GUI フロントエンド（TypeScript + CSS）
+└── index.html
+```
 
 ## 日付抽出の詳細
 

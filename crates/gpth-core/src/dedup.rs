@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::media::Media;
+use crate::ThrottledProgress;
 
 const MAX_HASH_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
 
 /// Compute SHA-256 hashes for media that share sizes, then remove duplicates.
-pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String]) -> anyhow::Result<Vec<Media>> {
+pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String], progress: &ThrottledProgress) -> anyhow::Result<Vec<Media>> {
     // Group by size
     let mut size_groups: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, m) in media.iter().enumerate() {
@@ -29,12 +29,7 @@ pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String]) -> anyhow::Resul
         .collect();
 
     if !needs_hash.is_empty() {
-        let pb = ProgressBar::new(needs_hash.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{bar:40}] {pos}/{len} hashing duplicates")
-                .unwrap(),
-        );
+        let total = needs_hash.len() as u64;
 
         // Batch-read entries grouped by zip, then hash in parallel from memory
         let mut by_zip: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -57,16 +52,16 @@ pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String]) -> anyhow::Resul
         }
 
         // Parallel hash from memory
+        let counter = std::sync::atomic::AtomicU64::new(0);
         let hashes: Vec<(usize, String)> = entry_bytes
             .par_iter()
             .map(|(idx, bytes)| {
                 let hash = hex::encode(Sha256::digest(bytes));
-                pb.inc(1);
+                let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                progress.report("dedup", current, total, "Hashing duplicates");
                 (*idx, hash)
             })
             .collect();
-
-        pb.finish_and_clear();
 
         for (idx, hash) in hashes {
             media[idx].hash = Some(hash);

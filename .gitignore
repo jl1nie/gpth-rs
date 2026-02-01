@@ -1,3 +1,5 @@
 /target
 *.msi
 *.wixpdb
+node_modules
+dist

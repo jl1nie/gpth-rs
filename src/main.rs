@@ -6,10 +6,10 @@ mod media;
 mod writer;
 mod zip_scan;
 
+use std::io::Read;
 use std::path::PathBuf;
 
 use clap::Parser;
-use rayon::prelude::*;
 
 #[derive(Parser)]
 #[command(name = "gpth-rs", version, about = "Google Photos Takeout Helper - process zip files without extraction")]
@@ -37,10 +37,13 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let t_total = std::time::Instant::now();
 
     // Stage 1: Scan all zips
     eprintln!("=== Stage 1: Scanning ZIP files ===");
+    let t = std::time::Instant::now();
     let scan = zip_scan::scan_zips(&cli.zip_files, cli.skip_extras)?;
+    eprintln!("  Scan took {:.2}s", t.elapsed().as_secs_f64());
     let mut media = scan.media;
 
     if media.is_empty() {
@@ -54,6 +57,7 @@ fn main() -> anyhow::Result<()> {
 
     // Stage 2: Extract dates
     eprintln!("=== Stage 2: Extracting dates ===");
+    let t = std::time::Instant::now();
     let allow_guess = !cli.no_guess;
 
     // JSON + guess pass (no I/O needed, already in memory)
@@ -69,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // EXIF pass (parallel): only for files without date yet, images < 32MiB
+    // EXIF pass: batch-read from each zip, then extract EXIF in parallel from memory
     let exif_targets: Vec<usize> = media
         .iter()
         .enumerate()
@@ -84,20 +88,65 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     if !exif_targets.is_empty() {
-        eprintln!("Reading EXIF for {} files (parallel)...", exif_targets.len());
+        eprintln!("Reading EXIF for {} files...", exif_targets.len());
 
-        let exif_results: Vec<(usize, Option<date::DateResult>)> = exif_targets
-            .par_iter()
-            .map(|&idx| {
-                let m = &media[idx];
-                let result = read_entry_from_zip(&cli.zip_files[m.zip_index], &m.zip_path)
-                    .ok()
-                    .and_then(|bytes| date::extract_date(None, Some(&bytes), &m.filename, allow_guess));
-                (idx, result)
-            })
-            .collect();
+        // Group by zip, chunk for parallel decompression + EXIF extraction
+        let mut by_zip: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for &idx in &exif_targets {
+            by_zip.entry(media[idx].zip_index).or_default().push(idx);
+        }
 
-        for (idx, result) in exif_results {
+        let num_threads = rayon::current_num_threads();
+        let mut all_results: Vec<(usize, Option<date::DateResult>)> = Vec::new();
+
+        for (zip_idx, indices) in &by_zip {
+            let chunk_size = (indices.len() + num_threads - 1) / num_threads;
+            let chunks: Vec<&[usize]> = indices.chunks(chunk_size).collect();
+            let zip_path = &cli.zip_files[*zip_idx];
+
+            let chunk_results: Vec<Vec<(usize, Option<date::DateResult>)>> =
+                std::thread::scope(|s| {
+                    let handles: Vec<_> = chunks
+                        .into_iter()
+                        .map(|chunk| {
+                            let media = &media;
+                            let zip_path = zip_path;
+                            s.spawn(move || -> Vec<(usize, Option<date::DateResult>)> {
+                                let Ok(file) = std::fs::File::open(zip_path) else {
+                                    return vec![];
+                                };
+                                let Ok(mut archive) = zip::ZipArchive::new(file) else {
+                                    return vec![];
+                                };
+                                let mut results = Vec::with_capacity(chunk.len());
+                                for &midx in chunk {
+                                    let m = &media[midx];
+                                    let result = archive
+                                        .by_name(&m.zip_path)
+                                        .ok()
+                                        .and_then(|mut entry| {
+                                            let mut bytes = Vec::with_capacity(entry.size() as usize);
+                                            entry.read_to_end(&mut bytes).ok()?;
+                                            Some(bytes)
+                                        })
+                                        .and_then(|bytes| {
+                                            date::extract_date(None, Some(&bytes), &m.filename, allow_guess)
+                                        });
+                                    results.push((midx, result));
+                                }
+                                results
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+
+            for chunk in chunk_results {
+                all_results.extend(chunk);
+            }
+        }
+
+        for (idx, result) in all_results {
             if let Some(r) = result {
                 media[idx].date = Some(r.date);
                 media[idx].date_accuracy = r.accuracy;
@@ -107,27 +156,23 @@ fn main() -> anyhow::Result<()> {
 
     let dated = media.iter().filter(|m| m.date.is_some()).count();
     eprintln!("Dates found: {}/{}", dated, media.len());
+    eprintln!("  Date extraction took {:.2}s", t.elapsed().as_secs_f64());
 
     // Stage 3: Deduplicate
     eprintln!("=== Stage 3: Deduplicating ===");
+    let t = std::time::Instant::now();
     let before = media.len();
     media = dedup::deduplicate(media, &cli.zip_files)?;
     eprintln!("Removed {} duplicates, {} files remaining", before - media.len(), media.len());
+    eprintln!("  Dedup took {:.2}s", t.elapsed().as_secs_f64());
 
     // Stage 4: Write output
     eprintln!("=== Stage 4: Writing output ===");
+    let t = std::time::Instant::now();
     writer::write_output(&media, &cli.zip_files, &cli.output, cli.divide_to_dates)?;
+    eprintln!("  Write took {:.2}s", t.elapsed().as_secs_f64());
 
+    eprintln!("Total: {:.2}s", t_total.elapsed().as_secs_f64());
     eprintln!("Done!");
     Ok(())
-}
-
-fn read_entry_from_zip(zip_path: &str, entry_path: &str) -> anyhow::Result<Vec<u8>> {
-    use std::io::Read;
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    let mut entry = archive.by_name(entry_path)?;
-    let mut bytes = Vec::new();
-    entry.read_to_end(&mut bytes)?;
-    Ok(bytes)
 }

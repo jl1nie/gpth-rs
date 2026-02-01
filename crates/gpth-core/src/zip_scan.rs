@@ -3,11 +3,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use indicatif::{ProgressBar, ProgressStyle};
-
 use crate::extras;
 use crate::folder_classify;
 use crate::media::Media;
+use crate::ThrottledProgress;
 
 /// An entry found in an album folder
 #[derive(Debug, Clone)]
@@ -19,6 +18,7 @@ pub struct AlbumEntry {
     pub size: u64,
 }
 
+/// Result of scanning all zip files
 pub struct ScanResult {
     /// Media files found (in year folders only)
     pub media: Vec<Media>,
@@ -28,36 +28,28 @@ pub struct ScanResult {
     pub album_entries: HashMap<String, Vec<AlbumEntry>>,
 }
 
-pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool) -> anyhow::Result<ScanResult> {
+/// Scan all zip files, collecting media entries and JSON metadata
+pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool, progress: &ThrottledProgress) -> anyhow::Result<ScanResult> {
     let mut media = Vec::new();
     let mut json_entries = HashMap::new();
     let mut album_entries: HashMap<String, Vec<AlbumEntry>> = HashMap::new();
 
     for (zip_index, zip_path) in zip_paths.iter().enumerate() {
-        eprintln!("Scanning: {}", zip_path);
         let file = File::open(zip_path)?;
         let mut archive = zip::ZipArchive::new(file)?;
+        let total = archive.len() as u64;
 
-        let pb = ProgressBar::new(archive.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{bar:40}] {pos}/{len} scanning {msg}")
-                .unwrap(),
-        );
-        pb.set_message(
-            Path::new(zip_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(zip_path)
-                .to_string(),
-        );
+        let zip_name = Path::new(zip_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(zip_path)
+            .to_string();
 
         for i in 0..archive.len() {
-            pb.inc(1);
+            progress.report("scan", i as u64, total, &format!("Scanning {}", zip_name));
             let entry = archive.by_index(i)?;
             let entry_path = entry.name().to_string();
 
-            // Skip directories
             if entry.is_dir() {
                 continue;
             }
@@ -120,8 +112,6 @@ pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool) -> 
                         entry_index: i,
                         size,
                     });
-                    // If not in a year folder, don't add to main media list yet
-                    // (will be merged in Stage 2.5)
                     if !folder_classify::is_in_year_folder(&entry_path) {
                         continue;
                     }
@@ -135,14 +125,7 @@ pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool) -> 
 
             media.push(Media::new(entry_path, zip_index, i, filename, size));
         }
-
-        pb.finish_and_clear();
-    }
-
-    eprintln!("Found {} media files, {} JSON metadata files", media.len(), json_entries.len());
-    if scan_albums && !album_entries.is_empty() {
-        let total_album_files: usize = album_entries.values().map(|v| v.len()).sum();
-        eprintln!("Found {} album(s) with {} entries", album_entries.len(), total_album_files);
+        progress.report("scan", total, total, &format!("Scanned {}", zip_name));
     }
 
     Ok(ScanResult {
