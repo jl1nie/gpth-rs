@@ -4,7 +4,7 @@
   <Package
     Name="gpth-rs"
     Manufacturer="Minoru Tomobe"
-    Version="0.1.0"
+    Version="0.2.0"
     UpgradeCode="107EA8C3-5218-44E5-934B-F04EFCC95057"
     Scope="perMachine"
     Language="1033">
@@ -23,6 +23,9 @@
     <ComponentGroup Id="BinaryComponents" Directory="BinFolder">
       <Component Id="gpthrs_exe">
         <File Source="target\release\gpth-rs.exe" />
+      </Component>
+      <Component Id="gpthrs_cli_exe">
+        <File Source="target\release\gpth-rs-cli.exe" />
       </Component>
     </ComponentGroup>
 
