@@ -14,8 +14,9 @@ Includes both a **GUI app** (Tauri) and a **CLI tool**.
 - **GUI & CLI** - desktop app with drag & drop, or command-line tool
 - **Parallel processing** - uses rayon for EXIF reading, hashing, and file writing
 - **Date extraction** - JSON metadata, EXIF, filename pattern guessing (priority order)
-- **Duplicate detection** - file size + SHA-256 deduplication
+- **Duplicate detection** - file size + SHA-256 streaming hash (no file size limit)
 - **Multilingual folder recognition** - 32+ language patterns for Google Takeout year folders
+- **Japanese ZIP support** - Shift_JIS encoded filenames in ZIP archives
 - **Edited file filtering** - skip `-edited`, `-bearbeitet`, `-編集済み`, etc.
 - **Date-based organization** - optional YYYY/MM subdirectory output
 - **Album support** - process named album folders, output as album directories or JSON index
@@ -51,7 +52,13 @@ Binaries will be at:
 1. Launch `gpth-rs.exe`
 2. Drag & drop ZIP files onto the window, or click **+ Add ZIP**
 3. Click **Browse** to select an output directory
-4. Toggle options as needed (hover for descriptions)
+4. Toggle options as needed:
+   - **Date folders** - Organize into YYYY/MM subdirectories
+   - **Skip derivatives** - Exclude edited/effects variants
+   - **No guess** - Use only JSON/EXIF metadata
+   - **Albums** - Process album information
+   - **Album folders** - Create album directories under `output/albums/`
+   - **Symlinks** - Use symlinks instead of copies (requires admin on Windows)
 5. Click **Run**
 
 ## CLI Usage

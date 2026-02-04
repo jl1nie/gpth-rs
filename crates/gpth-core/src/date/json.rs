@@ -31,45 +31,23 @@ pub fn parse_google_json(json_bytes: &[u8]) -> Option<NaiveDateTime> {
     Some(utc.with_timezone(&chrono::Local).naive_local())
 }
 
-/// Build a map of media_filename -> DateTime from all JSON entries in zip
-/// json_entries: map of zip_path -> json_bytes for all .json files
-pub fn build_json_date_map(
-    json_entries: &HashMap<String, Vec<u8>>,
-) -> HashMap<String, NaiveDateTime> {
-    let mut result = HashMap::new();
+/// Register a JSON date with all filename transformation variants.
+/// This allows O(1) lookup later instead of trying multiple transformations.
+pub fn register_json_date(
+    json_path: &str,
+    date: NaiveDateTime,
+    json_dates: &mut HashMap<String, NaiveDateTime>,
+) {
+    let json_name = Path::new(json_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
 
-    for (json_path, json_bytes) in json_entries {
-        if let Some(date) = parse_google_json(json_bytes) {
-            let json_name = Path::new(json_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if let Some(media_name) = json_name.strip_suffix(".json") {
-                let dir = Path::new(json_path)
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .unwrap_or("");
-                let media_path = if dir.is_empty() {
-                    media_name.to_string()
-                } else {
-                    format!("{}/{}", dir, media_name)
-                };
-                result.insert(media_path, date);
-            }
-        }
-    }
+    let Some(media_name) = json_name.strip_suffix(".json") else {
+        return;
+    };
 
-    result
-}
-
-/// Try multiple filename transformations to find matching JSON date
-pub fn find_json_date(
-    zip_path: &str,
-    filename: &str,
-    json_dates: &HashMap<String, NaiveDateTime>,
-    tryhard: bool,
-) -> Option<NaiveDateTime> {
-    let dir = Path::new(zip_path)
+    let dir = Path::new(json_path)
         .parent()
         .and_then(|p| p.to_str())
         .unwrap_or("");
@@ -82,41 +60,29 @@ pub fn find_json_date(
         }
     };
 
-    let methods: Vec<Box<dyn Fn(&str) -> String>> = {
-        let mut v: Vec<Box<dyn Fn(&str) -> String>> = vec![
-            Box::new(|s: &str| s.to_string()),
-            Box::new(shorten_name),
-            Box::new(bracket_swap),
-            Box::new(|s: &str| extras::remove_extra(s)),
-            Box::new(no_extension),
-        ];
-        if tryhard {
-            v.push(Box::new(remove_extra_regex));
-            v.push(Box::new(remove_digit));
-        }
-        v
-    };
+    // Register all transformation variants
+    let transformations: &[fn(&str) -> String] = &[
+        |s| s.to_string(),
+        shorten_name,
+        bracket_swap,
+        |s| extras::remove_extra(s),
+        no_extension,
+        remove_extra_regex,
+        remove_digit,
+    ];
 
-    for method in &methods {
-        let transformed = method(filename);
-        let path = make_path(&transformed);
-        if let Some(date) = json_dates.get(&path) {
-            return Some(*date);
-        }
+    for transform in transformations {
+        let key = make_path(&transform(media_name));
+        json_dates.entry(key).or_insert(date);
     }
+}
 
-    // If not found with basic methods, try tryhard
-    if !tryhard {
-        for method in [remove_extra_regex, remove_digit] {
-            let transformed = method(filename);
-            let path = make_path(&transformed);
-            if let Some(date) = json_dates.get(&path) {
-                return Some(*date);
-            }
-        }
-    }
-
-    None
+/// Find JSON date for a media file (simple O(1) lookup)
+pub fn find_json_date(
+    zip_path: &str,
+    json_dates: &HashMap<String, NaiveDateTime>,
+) -> Option<NaiveDateTime> {
+    json_dates.get(zip_path).copied()
 }
 
 fn shorten_name(filename: &str) -> String {

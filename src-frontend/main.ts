@@ -11,6 +11,9 @@ const selectOutputBtn = document.getElementById("select-output") as HTMLButtonEl
 const divideDatesCheck = document.getElementById("divide-dates") as HTMLInputElement;
 const skipExtrasCheck = document.getElementById("skip-extras") as HTMLInputElement;
 const noGuessCheck = document.getElementById("no-guess") as HTMLInputElement;
+const albumsCheck = document.getElementById("albums") as HTMLInputElement;
+const albumDestAlbumCheck = document.getElementById("album-dest-album") as HTMLInputElement;
+const albumLinkCheck = document.getElementById("album-link") as HTMLInputElement;
 const runBtn = document.getElementById("run-btn") as HTMLButtonElement;
 const progressSection = document.getElementById("progress-section") as HTMLElement;
 const progressStage = document.getElementById("progress-stage") as HTMLElement;
@@ -22,6 +25,17 @@ const resultText = document.getElementById("result-text") as HTMLParagraphElemen
 const logOutput = document.getElementById("log-output") as HTMLPreElement;
 
 let zipFiles: string[] = [];
+
+// Album options toggle
+albumsCheck.onchange = () => {
+  const enabled = albumsCheck.checked;
+  albumDestAlbumCheck.disabled = !enabled;
+  albumLinkCheck.disabled = !enabled;
+  if (!enabled) {
+    albumDestAlbumCheck.checked = false;
+    albumLinkCheck.checked = false;
+  }
+};
 
 function addZipPaths(paths: string[]) {
   for (const p of paths) {
@@ -116,6 +130,7 @@ const stageLabels: Record<string, string> = {
   scan: "Scanning ZIP files",
   date: "Extracting dates",
   "date-exif": "Reading EXIF data",
+  "date-exif-album": "Reading EXIF (albums)",
   dedup: "Deduplicating",
   write: "Writing files",
 };
@@ -163,6 +178,9 @@ runBtn.onclick = async () => {
         divide_to_dates: divideDatesCheck.checked,
         skip_extras: skipExtrasCheck.checked,
         no_guess: noGuessCheck.checked,
+        albums: albumsCheck.checked,
+        album_dest: albumDestAlbumCheck.checked ? "album" : "year",
+        album_link: albumLinkCheck.checked,
       },
     });
     progressSection.hidden = true;

@@ -3,10 +3,33 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use chrono::NaiveDateTime;
+use encoding_rs::SHIFT_JIS;
+
+use crate::date;
 use crate::extras;
 use crate::folder_classify;
 use crate::media::Media;
 use crate::ThrottledProgress;
+
+/// Decode ZIP entry name, trying UTF-8 first, then Shift_JIS
+fn decode_zip_name(entry: &zip::read::ZipFile) -> String {
+    let raw = entry.name_raw();
+
+    // Try UTF-8 first
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return s.to_string();
+    }
+
+    // Fall back to Shift_JIS (common for Japanese ZIP files)
+    let (decoded, _, had_errors) = SHIFT_JIS.decode(raw);
+    if !had_errors {
+        return decoded.into_owned();
+    }
+
+    // Last resort: lossy UTF-8
+    String::from_utf8_lossy(raw).into_owned()
+}
 
 /// An entry found in an album folder
 #[derive(Debug, Clone)]
@@ -22,16 +45,16 @@ pub struct AlbumEntry {
 pub struct ScanResult {
     /// Media files found (in year folders only)
     pub media: Vec<Media>,
-    /// JSON metadata: zip_path -> raw bytes
-    pub json_entries: HashMap<String, Vec<u8>>,
+    /// JSON dates: media_path (with variants) -> date
+    pub json_dates: HashMap<String, NaiveDateTime>,
     /// Album entries: album_name -> list of album entries
     pub album_entries: HashMap<String, Vec<AlbumEntry>>,
 }
 
-/// Scan all zip files, collecting media entries and JSON metadata
+/// Scan all zip files, collecting media entries and JSON dates
 pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool, progress: &ThrottledProgress) -> anyhow::Result<ScanResult> {
     let mut media = Vec::new();
-    let mut json_entries = HashMap::new();
+    let mut json_dates: HashMap<String, NaiveDateTime> = HashMap::new();
     let mut album_entries: HashMap<String, Vec<AlbumEntry>> = HashMap::new();
 
     for (zip_index, zip_path) in zip_paths.iter().enumerate() {
@@ -48,7 +71,7 @@ pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool, pro
         for i in 0..archive.len() {
             progress.report("scan", i as u64, total, &format!("Scanning {}", zip_name));
             let entry = archive.by_index(i)?;
-            let entry_path = entry.name().to_string();
+            let entry_path = decode_zip_name(&entry);
 
             if entry.is_dir() {
                 continue;
@@ -64,13 +87,16 @@ pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool, pro
                 continue;
             }
 
-            // Collect JSON metadata files
+            // Parse JSON metadata and register date with all variants
             if entry_path.ends_with(".json") {
                 drop(entry);
                 let mut json_entry = archive.by_index(i)?;
                 let mut bytes = Vec::new();
                 json_entry.read_to_end(&mut bytes)?;
-                json_entries.insert(entry_path, bytes);
+                if let Some(dt) = date::json::parse_google_json(&bytes) {
+                    date::json::register_json_date(&entry_path, dt, &mut json_dates);
+                }
+                // bytes dropped here - no longer kept in memory
                 continue;
             }
 
@@ -130,7 +156,7 @@ pub fn scan_zips(zip_paths: &[String], skip_extras: bool, scan_albums: bool, pro
 
     Ok(ScanResult {
         media,
-        json_entries,
+        json_dates,
         album_entries,
     })
 }

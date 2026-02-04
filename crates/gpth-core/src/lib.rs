@@ -48,6 +48,8 @@ pub struct ProcessResult {
     pub total_media: u64,
     pub duplicates_removed: u64,
     pub files_written: u64,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Type alias for progress callback
@@ -96,11 +98,12 @@ pub fn process(
             total_media: 0,
             duplicates_removed: 0,
             files_written: 0,
+            warnings: vec![],
         });
     }
 
-    // Build JSON date map
-    let json_dates = date::json::build_json_date_map(&scan.json_entries);
+    // Use pre-built JSON date map from scan (already has all variants registered)
+    let json_dates = scan.json_dates;
 
     // Stage 2: Extract dates
     let allow_guess = !options.no_guess;
@@ -108,10 +111,7 @@ pub fn process(
 
     // JSON + guess pass (fast, single report)
     for m in media_list.iter_mut() {
-        let json_date = date::json::find_json_date(&m.zip_path, &m.filename, &json_dates, false)
-            .or_else(|| {
-                date::json::find_json_date(&m.zip_path, &m.filename, &json_dates, true)
-            });
+        let json_date = date::json::find_json_date(&m.zip_path, &json_dates);
 
         if let Some(result) = date::extract_date(json_date, None, &m.filename, allow_guess) {
             m.date = Some(result.date);
@@ -204,17 +204,22 @@ pub fn process(
         }
     }
 
-    // Stage 2.5: Album merge
+    // Stage 2.5: Album merge (O(N+M) using HashMap)
+    let album_only_start = media_list.len();
     if options.albums && !scan.album_entries.is_empty() {
+        // Build lookup index: (filename, size) -> media index
+        let mut media_index: std::collections::HashMap<(String, u64), usize> =
+            std::collections::HashMap::with_capacity(media_list.len());
+        for (i, m) in media_list.iter().enumerate() {
+            media_index.insert((m.filename.clone(), m.size), i);
+        }
+
         for (album_name, entries) in &scan.album_entries {
             for ae in entries {
-                // Try to match with existing media by filename + size
-                let matched = media_list.iter_mut().find(|m| {
-                    m.filename == ae.filename && m.size == ae.size
-                });
-                if let Some(m) = matched {
-                    if !m.albums.contains(album_name) {
-                        m.albums.push(album_name.clone());
+                // O(1) lookup using HashMap
+                if let Some(&idx) = media_index.get(&(ae.filename.clone(), ae.size)) {
+                    if !media_list[idx].albums.contains(album_name) {
+                        media_list[idx].albums.push(album_name.clone());
                     }
                 } else {
                     // Album-only file: add as new Media
@@ -226,7 +231,120 @@ pub fn process(
                         ae.size,
                     );
                     m.albums.push(album_name.clone());
+                    // Add to index for subsequent lookups within same album scan
+                    media_index.insert((ae.filename.clone(), ae.size), media_list.len());
                     media_list.push(m);
+                }
+            }
+        }
+    }
+
+    // Stage 2.6: Extract dates for album-only files
+    if album_only_start < media_list.len() {
+        // JSON + guess pass for album-only files
+        for m in media_list[album_only_start..].iter_mut() {
+            let json_date = date::json::find_json_date(&m.zip_path, &json_dates);
+            if let Some(result) = date::extract_date(json_date, None, &m.filename, allow_guess) {
+                m.date = Some(result.date);
+                m.date_accuracy = result.accuracy;
+            }
+        }
+
+        // EXIF pass for album-only files
+        let album_exif_targets: Vec<usize> = media_list[album_only_start..]
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                m.date.is_none()
+                    && m.size <= 32 * 1024 * 1024
+                    && mime_guess::from_path(&m.filename)
+                        .first()
+                        .map_or(false, |mime| mime.type_() == mime_guess::mime::IMAGE)
+            })
+            .map(|(i, _)| album_only_start + i)
+            .collect();
+
+        if !album_exif_targets.is_empty() {
+            let exif_total = album_exif_targets.len() as u64;
+            let mut by_zip: std::collections::HashMap<usize, Vec<usize>> =
+                std::collections::HashMap::new();
+            for &idx in &album_exif_targets {
+                by_zip
+                    .entry(media_list[idx].zip_index)
+                    .or_default()
+                    .push(idx);
+            }
+
+            let num_threads = rayon::current_num_threads();
+            let mut all_results: Vec<(usize, Option<date::DateResult>)> = Vec::new();
+            let counter = AtomicU64::new(0);
+
+            for (zip_idx, indices) in &by_zip {
+                let chunk_size = (indices.len() + num_threads - 1) / num_threads;
+                let chunks: Vec<&[usize]> = indices.chunks(chunk_size).collect();
+                let zip_path = &options.zip_files[*zip_idx];
+
+                let chunk_results: Vec<Vec<(usize, Option<date::DateResult>)>> =
+                    std::thread::scope(|s| {
+                        let handles: Vec<_> = chunks
+                            .into_iter()
+                            .map(|chunk| {
+                                let media = &media_list;
+                                let zip_path = zip_path;
+                                let counter = &counter;
+                                let tp = &tp;
+                                s.spawn(move || -> Vec<(usize, Option<date::DateResult>)> {
+                                    let Ok(file) = std::fs::File::open(zip_path) else {
+                                        return vec![];
+                                    };
+                                    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+                                        return vec![];
+                                    };
+                                    let mut results = Vec::with_capacity(chunk.len());
+                                    for &midx in chunk {
+                                        let m = &media[midx];
+                                        let result = archive
+                                            .by_name(&m.zip_path)
+                                            .ok()
+                                            .and_then(|mut entry| {
+                                                let mut bytes =
+                                                    Vec::with_capacity(entry.size() as usize);
+                                                entry.read_to_end(&mut bytes).ok()?;
+                                                Some(bytes)
+                                            })
+                                            .and_then(|bytes| {
+                                                date::extract_date(
+                                                    None,
+                                                    Some(&bytes),
+                                                    &m.filename,
+                                                    allow_guess,
+                                                )
+                                            });
+                                        let current = counter.fetch_add(1, Ordering::Relaxed);
+                                        tp.report(
+                                            "date-exif-album",
+                                            current,
+                                            exif_total,
+                                            "Reading EXIF (albums)",
+                                        );
+                                        results.push((midx, result));
+                                    }
+                                    results
+                                })
+                            })
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    });
+
+                for chunk in chunk_results {
+                    all_results.extend(chunk);
+                }
+            }
+
+            for (idx, result) in all_results {
+                if let Some(r) = result {
+                    media_list[idx].date = Some(r.date);
+                    media_list[idx].date_accuracy = r.accuracy;
                 }
             }
         }
@@ -234,7 +352,9 @@ pub fn process(
 
     // Stage 3: Deduplicate
     let before = media_list.len();
-    media_list = dedup::deduplicate(media_list, &options.zip_files, &tp)?;
+    let dedup_result = dedup::deduplicate(media_list, &options.zip_files, &tp)?;
+    media_list = dedup_result.media;
+    let warnings = dedup_result.warnings;
     let duplicates_removed = (before - media_list.len()) as u64;
 
     // Stage 4: Write output
@@ -267,5 +387,6 @@ pub fn process(
         total_media: before as u64,
         duplicates_removed,
         files_written: media_list.len() as u64,
+        warnings,
     })
 }

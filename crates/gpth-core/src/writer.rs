@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,8 @@ pub fn write_output(
     fs::create_dir_all(output_dir)?;
 
     // Phase 1: Assign destination paths (sequential - needs collision tracking)
+    // Use counters per base path to avoid O(n²) worst case
+    let mut name_counters: HashMap<PathBuf, u32> = HashMap::new();
     let mut used_paths: HashSet<PathBuf> = HashSet::new();
     let mut assignments: Vec<PathBuf> = Vec::with_capacity(media.len());
 
@@ -41,8 +43,12 @@ pub fn write_output(
 
         fs::create_dir_all(&sub_dir)?;
 
-        let mut dest = sub_dir.join(&m.filename);
-        if used_paths.contains(&dest) || dest.exists() {
+        let base_dest = sub_dir.join(&m.filename);
+        let counter = name_counters.entry(base_dest.clone()).or_insert(0);
+
+        let dest = if *counter == 0 && !base_dest.exists() && !used_paths.contains(&base_dest) {
+            base_dest
+        } else {
             let stem = Path::new(&m.filename)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -51,20 +57,21 @@ pub fn write_output(
                 .extension()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            let mut counter = 1u32;
+
+            // Start from the current counter value (avoid re-checking already used numbers)
             loop {
+                *counter += 1;
                 let new_name = if ext.is_empty() {
                     format!("{}({})", stem, counter)
                 } else {
                     format!("{}({}).{}", stem, counter, ext)
                 };
-                dest = sub_dir.join(&new_name);
-                if !used_paths.contains(&dest) && !dest.exists() {
-                    break;
+                let candidate = sub_dir.join(&new_name);
+                if !used_paths.contains(&candidate) && !candidate.exists() {
+                    break candidate;
                 }
-                counter += 1;
             }
-        }
+        };
 
         used_paths.insert(dest.clone());
         assignments.push(dest);
@@ -148,12 +155,43 @@ fn write_album_folders(
 ) -> anyhow::Result<()> {
     let albums_dir = output_dir.join("albums");
     let mut count = 0u32;
+    // Track used paths per album to avoid collisions
+    let mut used_by_album: HashMap<String, HashSet<PathBuf>> = HashMap::new();
 
     for (m, dest) in media.iter().zip(assignments.iter()) {
         for album_name in &m.albums {
             let album_dir = albums_dir.join(album_name);
             fs::create_dir_all(&album_dir)?;
-            let album_file = album_dir.join(&m.filename);
+
+            // Get or create the used paths set for this album
+            let used = used_by_album.entry(album_name.clone()).or_default();
+
+            // Resolve filename collision
+            let mut album_file = album_dir.join(&m.filename);
+            if used.contains(&album_file) || album_file.exists() {
+                let stem = Path::new(&m.filename)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("file");
+                let ext = Path::new(&m.filename)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                let mut counter = 1u32;
+                loop {
+                    let new_name = if ext.is_empty() {
+                        format!("{}({})", stem, counter)
+                    } else {
+                        format!("{}({}).{}", stem, counter, ext)
+                    };
+                    album_file = album_dir.join(&new_name);
+                    if !used.contains(&album_file) && !album_file.exists() {
+                        break;
+                    }
+                    counter += 1;
+                }
+            }
+            used.insert(album_file.clone());
 
             if use_symlinks {
                 let rel = pathdiff::diff_paths(dest, &album_dir)

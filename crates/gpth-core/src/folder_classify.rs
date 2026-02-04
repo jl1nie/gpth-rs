@@ -33,6 +33,29 @@ const YEAR_FOLDER_SUFFIXES: &[&str] = &[
     "年的相片",     // ZH-TW
 ];
 
+/// Exact Google Photos folder names in various languages
+const GOOGLE_PHOTOS_FOLDERS: &[&str] = &[
+    "Google Photos",       // EN
+    "Google Fotos",        // DE, ES, PT
+    "Google Foto's",       // NL
+    "Google Foto",         // IT
+    "Photos Google",       // FR
+    "Zdjęcia Google",      // PL
+    "Google Фото",         // RU
+    "Fotky Google",        // CS
+    "Google Foto",         // RO
+    "Google Foton",        // SV
+    "Google Bilder",       // NO
+    "Google Billeder",     // DA
+    "Google Kuvat",        // FI
+    "Google Fotók",        // HU
+    "Google Fotoğraflar",  // TR
+    "Google フォト",       // JA
+    "Google 포토",         // KO
+    "Google 相片",         // ZH-TW
+    "Google 照片",         // ZH-CN
+];
+
 static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(20|19|18)\d{2}$").unwrap());
 
 /// Check if a folder name matches a Google Takeout year folder pattern
@@ -71,13 +94,8 @@ pub fn extract_album_name(zip_path: &str) -> Option<String> {
     let parts: Vec<&str> = zip_path.split('/').collect();
     for i in 0..parts.len().saturating_sub(2) {
         let p = parts[i];
-        if p.starts_with("Google")
-            && (p.contains("hoto")
-                || p.contains("ото")
-                || p.contains("フォト")
-                || p.contains("照片")
-                || p.contains("사진"))
-        {
+        // Use exact matching against known Google Photos folder names
+        if GOOGLE_PHOTOS_FOLDERS.contains(&p) {
             let folder_name = parts[i + 1];
             if !folder_name.is_empty() && !is_year_folder(folder_name) {
                 if i + 2 < parts.len() {

@@ -1,69 +1,137 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::media::Media;
 use crate::ThrottledProgress;
 
-const MAX_HASH_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
+/// Buffer size for streaming hash (64 KB)
+const HASH_BUFFER_SIZE: usize = 64 * 1024;
+
+/// Result of deduplication
+pub struct DedupResult {
+    pub media: Vec<Media>,
+    pub warnings: Vec<String>,
+}
+
+/// Compute SHA-256 hash using streaming to avoid loading entire file into memory
+fn compute_streaming_hash<R: Read>(mut reader: R) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; HASH_BUFFER_SIZE];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
 
 /// Compute SHA-256 hashes for media that share sizes, then remove duplicates.
-pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String], progress: &ThrottledProgress) -> anyhow::Result<Vec<Media>> {
+/// Uses streaming hash to minimize memory usage - no file size limit.
+pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String], progress: &ThrottledProgress) -> anyhow::Result<DedupResult> {
+    let mut warnings = Vec::new();
+
     // Group by size
     let mut size_groups: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, m) in media.iter().enumerate() {
         size_groups.entry(m.size).or_default().push(i);
     }
 
-    // Only hash files that share a size with at least one other file and are <= 64MiB
+    // Only hash files that share a size with at least one other file (no size limit with streaming)
     let needs_hash: Vec<usize> = size_groups
         .values()
         .filter(|indices| indices.len() > 1)
         .flatten()
         .copied()
-        .filter(|&i| media[i].size <= MAX_HASH_SIZE)
         .collect();
 
     if !needs_hash.is_empty() {
         let total = needs_hash.len() as u64;
+        let counter = AtomicU64::new(0);
 
-        // Batch-read entries grouped by zip, then hash in parallel from memory
+        // Group by zip for efficient reading
         let mut by_zip: HashMap<usize, Vec<usize>> = HashMap::new();
         for &idx in &needs_hash {
             by_zip.entry(media[idx].zip_index).or_default().push(idx);
         }
 
-        let mut entry_bytes: Vec<(usize, Vec<u8>)> = Vec::with_capacity(needs_hash.len());
-        for (zip_idx, media_indices) in &by_zip {
-            let Ok(file) = File::open(&zip_files[*zip_idx]) else { continue };
-            let Ok(mut archive) = ZipArchive::new(file) else { continue };
+        // Process each ZIP file with parallel threads (each thread opens its own archive)
+        let num_threads = rayon::current_num_threads();
+        let mut all_hashes: Vec<(usize, String)> = Vec::new();
+        let mut skipped_count = 0usize;
 
-            for &midx in media_indices {
-                let Ok(mut entry) = archive.by_name(&media[midx].zip_path) else { continue };
-                let mut bytes = Vec::with_capacity(entry.size() as usize);
-                if entry.read_to_end(&mut bytes).is_ok() {
-                    entry_bytes.push((midx, bytes));
-                }
+        for (zip_idx, media_indices) in &by_zip {
+            let zip_path = &zip_files[*zip_idx];
+
+            // Split work across threads
+            let chunk_size = (media_indices.len() + num_threads - 1) / num_threads;
+            let chunks: Vec<&[usize]> = media_indices.chunks(chunk_size).collect();
+
+            let chunk_results: Vec<(Vec<(usize, String)>, usize)> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunks
+                    .into_iter()
+                    .map(|chunk| {
+                        let media = &media;
+                        let zip_path = zip_path;
+                        let counter = &counter;
+                        let progress = progress;
+                        s.spawn(move || -> (Vec<(usize, String)>, usize) {
+                            let mut results = Vec::new();
+                            let mut skipped = 0usize;
+
+                            let file = match File::open(zip_path) {
+                                Ok(f) => f,
+                                Err(_) => {
+                                    skipped = chunk.len();
+                                    return (results, skipped);
+                                }
+                            };
+                            let mut archive = match ZipArchive::new(file) {
+                                Ok(a) => a,
+                                Err(_) => {
+                                    skipped = chunk.len();
+                                    return (results, skipped);
+                                }
+                            };
+
+                            for &midx in chunk {
+                                let m = &media[midx];
+                                match archive.by_name(&m.zip_path) {
+                                    Ok(entry) => {
+                                        match compute_streaming_hash(entry) {
+                                            Ok(hash) => results.push((midx, hash)),
+                                            Err(_) => skipped += 1,
+                                        }
+                                    }
+                                    Err(_) => skipped += 1,
+                                }
+                                let current = counter.fetch_add(1, Ordering::Relaxed);
+                                progress.report("dedup", current, total, "Hashing duplicates");
+                            }
+                            (results, skipped)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            for (hashes, skipped) in chunk_results {
+                all_hashes.extend(hashes);
+                skipped_count += skipped;
             }
         }
 
-        // Parallel hash from memory
-        let counter = std::sync::atomic::AtomicU64::new(0);
-        let hashes: Vec<(usize, String)> = entry_bytes
-            .par_iter()
-            .map(|(idx, bytes)| {
-                let hash = hex::encode(Sha256::digest(bytes));
-                let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                progress.report("dedup", current, total, "Hashing duplicates");
-                (*idx, hash)
-            })
-            .collect();
+        if skipped_count > 0 {
+            warnings.push(format!("Skipped {} files during dedup hashing", skipped_count));
+        }
 
-        for (idx, hash) in hashes {
+        for (idx, hash) in all_hashes {
             media[idx].hash = Some(hash);
         }
     }
@@ -100,5 +168,5 @@ pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String], progress: &Throt
         media.swap_remove(idx);
     }
 
-    Ok(media)
+    Ok(DedupResult { media, warnings })
 }
