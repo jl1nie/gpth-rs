@@ -1,6 +1,6 @@
 [package]
 name = "gpth-core"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
@@ -8,7 +8,7 @@ clap = { version = "4", features = ["derive"] }
 zip = "2"
 sha2 = "0.10"
 hex = "0.4"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 kamadak-exif = "0.5"
@@ -21,3 +21,6 @@ filetime = "0.2"
 rayon = "1.10"
 pathdiff = "0.2"
 encoding_rs = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

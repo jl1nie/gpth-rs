@@ -1,4 +1,5 @@
 pub mod album_json;
+pub mod checkpoint;
 pub mod date;
 pub mod dedup;
 pub mod extras;
@@ -54,6 +55,38 @@ pub struct ProcessResult {
     pub warnings: Vec<String>,
 }
 
+
+/// Control options for process execution (resume, cancellation).
+#[derive(Debug, Clone, Default)]
+pub struct ProcessControl {
+    /// Whether to resume from an existing checkpoint.
+    pub resume: bool,
+    /// Cancellation token for pause/cancel support.
+    pub cancel_token: Option<checkpoint::CancellationToken>,
+}
+
+impl ProcessControl {
+    /// Create a new ProcessControl with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create ProcessControl with resume enabled.
+    pub fn with_resume(mut self, resume: bool) -> Self {
+        self.resume = resume;
+        self
+    }
+
+    /// Create ProcessControl with a cancellation token.
+    pub fn with_cancel_token(mut self, token: checkpoint::CancellationToken) -> Self {
+        self.cancel_token = Some(token);
+        self
+    }
+}
+
+// Re-export checkpoint types for convenience
+pub use checkpoint::{CancellationToken, CancelledError, Checkpoint, CheckpointSaver, CHECKPOINT_FILENAME};
+
 /// Type alias for progress callback
 pub type ProgressCallback = dyn Fn(&str, u64, u64, &str) + Send + Sync;
 
@@ -89,13 +122,56 @@ pub fn process(
     options: &ProcessOptions,
     progress_callback: &ProgressCallback,
 ) -> anyhow::Result<ProcessResult> {
+    process_with_control(options, &ProcessControl::default(), progress_callback)
+}
+
+/// Run the full processing pipeline with progress reporting and control options.
+pub fn process_with_control(
+    options: &ProcessOptions,
+    control: &ProcessControl,
+    progress_callback: &ProgressCallback,
+) -> anyhow::Result<ProcessResult> {
     let tp = ThrottledProgress::new(progress_callback);
+
+    // Check for cancellation early
+    if let Some(ref token) = control.cancel_token {
+        token.check()?;
+    }
+
+    // Load or create checkpoint
+    let mut checkpoint_saver = if control.resume {
+        if let Some(existing) = checkpoint::Checkpoint::load(&options.output)? {
+            if existing.is_compatible(options)? {
+                eprintln!("Resuming from checkpoint: {} files already written", existing.written_files.len());
+                Some(checkpoint::CheckpointSaver::from_existing(existing, options.output.clone()))
+            } else {
+                eprintln!("Checkpoint incompatible with current options, starting fresh");
+                let cp = checkpoint::Checkpoint::new(options)?;
+                Some(checkpoint::CheckpointSaver::new(cp, options.output.clone()))
+            }
+        } else {
+            let cp = checkpoint::Checkpoint::new(options)?;
+            Some(checkpoint::CheckpointSaver::new(cp, options.output.clone()))
+        }
+    } else {
+        // Even without --resume, we create a checkpoint for potential future resume
+        let cp = checkpoint::Checkpoint::new(options)?;
+        Some(checkpoint::CheckpointSaver::new(cp, options.output.clone()))
+    };
+
+    if let Some(ref mut saver) = checkpoint_saver {
+        saver.set_stage("scan");
+    }
 
     // Stage 1: Scan all zips
     let scan = zip_scan::scan_zips(&options.zip_files, options.skip_extras, options.albums, &tp)?;
     let mut media_list = scan.media;
 
     if media_list.is_empty() {
+        // Clean up checkpoint on success
+        if let Some(mut saver) = checkpoint_saver {
+            let _ = saver.mark_completed();
+        }
         return Ok(ProcessResult {
             total_media: 0,
             duplicates_removed: 0,
@@ -105,8 +181,22 @@ pub fn process(
         });
     }
 
+    // Check for cancellation
+    if let Some(ref token) = control.cancel_token {
+        if token.check().is_err() {
+            if let Some(mut saver) = checkpoint_saver {
+                saver.force_save();
+            }
+            return Err(checkpoint::CancelledError.into());
+        }
+    }
+
     // Use pre-built JSON date map from scan (already has all variants registered)
     let json_dates = scan.json_dates;
+
+    if let Some(ref mut saver) = checkpoint_saver {
+        saver.set_stage("date");
+    }
 
     // Stage 2: Extract dates
     let allow_guess = !options.no_guess;
@@ -204,6 +294,16 @@ pub fn process(
                 media_list[idx].date = Some(r.date);
                 media_list[idx].date_accuracy = r.accuracy;
             }
+        }
+    }
+
+    // Check for cancellation
+    if let Some(ref token) = control.cancel_token {
+        if token.check().is_err() {
+            if let Some(mut saver) = checkpoint_saver {
+                saver.force_save();
+            }
+            return Err(checkpoint::CancelledError.into());
         }
     }
 
@@ -353,12 +453,40 @@ pub fn process(
         }
     }
 
+    // Check for cancellation
+    if let Some(ref token) = control.cancel_token {
+        if token.check().is_err() {
+            if let Some(mut saver) = checkpoint_saver {
+                saver.force_save();
+            }
+            return Err(checkpoint::CancelledError.into());
+        }
+    }
+
+    if let Some(ref mut saver) = checkpoint_saver {
+        saver.set_stage("dedup");
+    }
+
     // Stage 3: Deduplicate
     let before = media_list.len();
     let dedup_result = dedup::deduplicate(media_list, &options.zip_files, &tp)?;
     media_list = dedup_result.media;
     let warnings = dedup_result.warnings;
     let duplicates_removed = (before - media_list.len()) as u64;
+
+    // Check for cancellation
+    if let Some(ref token) = control.cancel_token {
+        if token.check().is_err() {
+            if let Some(mut saver) = checkpoint_saver {
+                saver.force_save();
+            }
+            return Err(checkpoint::CancelledError.into());
+        }
+    }
+
+    if let Some(ref mut saver) = checkpoint_saver {
+        saver.set_stage("write");
+    }
 
     // Stage 4: Write output
     let album_dest_opt = if options.albums {
@@ -374,6 +502,8 @@ pub fn process(
         album_dest_opt,
         options.album_link,
         &tp,
+        checkpoint_saver.as_mut(),
+        control.cancel_token.as_ref(),
     )?;
     let assignments = write_result.assignments;
     let files_skipped = write_result.files_skipped;
@@ -386,6 +516,11 @@ pub fn process(
                 .unwrap_or_else(|| options.output.join("albums.json"));
             album_json::write_albums_json(&media_list, &assignments, &options.output, &album_json_path)?;
         }
+    }
+
+    // Clean up checkpoint on success
+    if let Some(mut saver) = checkpoint_saver {
+        let _ = saver.mark_completed();
     }
 
     Ok(ProcessResult {

@@ -40,6 +40,14 @@ struct Cli {
     /// Output path for albums.json (default: <output>/albums.json)
     #[arg(long)]
     album_json: Option<std::path::PathBuf>,
+
+    /// Resume from checkpoint if available
+    #[arg(long)]
+    resume: bool,
+
+    /// Ignore existing checkpoint and start fresh
+    #[arg(long, conflicts_with = "resume")]
+    no_resume: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,7 +56,7 @@ fn main() -> anyhow::Result<()> {
 
     let options = gpth_core::ProcessOptions {
         zip_files: cli.zip_files,
-        output: cli.output,
+        output: cli.output.clone(),
         divide_to_dates: cli.divide_to_dates,
         skip_extras: cli.skip_extras,
         no_guess: cli.no_guess,
@@ -58,18 +66,54 @@ fn main() -> anyhow::Result<()> {
         album_json: cli.album_json,
     };
 
-    let result = gpth_core::process(&options, &|stage, current, total, message| {
-        eprintln!("\r[{}] {}/{} {}", stage, current + 1, total, message);
+    // Set up cancellation token and Ctrl+C handler
+    let cancel_token = gpth_core::CancellationToken::new();
+    let token_clone = cancel_token.clone();
+    
+    ctrlc::set_handler(move || {
+        eprintln!("\nInterrupted! Saving checkpoint...");
+        token_clone.cancel();
     })?;
 
-    eprintln!(
-        "Done! {} media files, {} duplicates removed, {} files written, {} skipped ({:.2}s)",
-        result.total_media,
-        result.duplicates_removed,
-        result.files_written,
-        result.files_skipped,
-        t_total.elapsed().as_secs_f64()
-    );
+    // Determine resume mode
+    let resume = if cli.no_resume {
+        // Delete existing checkpoint if --no-resume
+        let _ = gpth_core::Checkpoint::delete(&cli.output);
+        false
+    } else {
+        cli.resume
+    };
 
-    Ok(())
+    let control = gpth_core::ProcessControl::new()
+        .with_resume(resume)
+        .with_cancel_token(cancel_token);
+
+    let result = gpth_core::process_with_control(&options, &control, &|stage, current, total, message| {
+        eprint!("\r[{}] {}/{} {}        ", stage, current + 1, total, message);
+    });
+
+    eprintln!(); // Clear the progress line
+
+    match result {
+        Ok(result) => {
+            eprintln!(
+                "Done! {} media files, {} duplicates removed, {} files written, {} skipped ({:.2}s)",
+                result.total_media,
+                result.duplicates_removed,
+                result.files_written,
+                result.files_skipped,
+                t_total.elapsed().as_secs_f64()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            if e.downcast_ref::<gpth_core::CancelledError>().is_some() {
+                eprintln!("Processing interrupted. Checkpoint saved.");
+                eprintln!("Run with --resume to continue from where you left off.");
+                std::process::exit(130); // Standard exit code for Ctrl+C
+            } else {
+                Err(e)
+            }
+        }
+    }
 }

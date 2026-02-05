@@ -131,6 +131,33 @@ body {
   transform: none;
 }
 .btn-full { width: 100%; }
+.btn-run { flex: 1; }
+
+.btn-danger {
+  background: var(--red);
+  color: #fff;
+}
+.btn-danger:hover {
+  background: #c04545;
+}
+.btn-danger:disabled,
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Run Controls ────────────────────── */
+
+.run-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.resume-option {
+  flex-shrink: 0;
+}
 
 /* ── Input ────────────────────────────── */
 
@@ -311,6 +338,13 @@ input[type="text"][readonly] { cursor: default; }
   font-size: 10px;
   color: var(--text-dim);
   margin-top: 3px;
+}
+
+.progress-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  justify-content: flex-end;
 }
 
 /* ── Result ───────────────────────────── */

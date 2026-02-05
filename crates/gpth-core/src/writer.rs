@@ -2,12 +2,34 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use zip::ZipArchive;
 
 use crate::media::Media;
 use crate::ThrottledProgress;
+
+/// Recursively scan directory for existing files with sizes (for fast exists/size checks).
+/// Returns HashMap<path, size> to avoid repeated stat() calls.
+fn scan_existing_files(dir: &Path) -> HashMap<PathBuf, u64> {
+    let mut files = HashMap::new();
+    scan_existing_files_recursive(dir, &mut files);
+    files
+}
+
+fn scan_existing_files_recursive(dir: &Path, files: &mut HashMap<PathBuf, u64>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_existing_files_recursive(&path, files);
+        } else if let Ok(meta) = entry.metadata() {
+            files.insert(path, meta.len());
+        }
+    }
+}
 
 /// Assign output paths, then write files.
 /// Result of the write phase.
@@ -24,18 +46,49 @@ pub fn write_output(
     album_dest: Option<&str>,
     album_link: bool,
     progress: &ThrottledProgress,
+    checkpoint_saver: Option<&mut crate::checkpoint::CheckpointSaver>,
+    cancel_token: Option<&crate::checkpoint::CancellationToken>,
 ) -> anyhow::Result<WriteResult> {
     fs::create_dir_all(output_dir)?;
+
+    // Get already written files from checkpoint (if resuming)
+    // Map: zip_path -> output_path
+    let already_written: HashMap<String, PathBuf> = checkpoint_saver
+        .as_ref()
+        .map(|s| s.get_written_map())
+        .unwrap_or_default();
 
     // Phase 1: Assign destination paths (sequential - needs collision tracking)
     // Use counters per base path to avoid O(n²) worst case
     let mut name_counters: HashMap<PathBuf, u32> = HashMap::new();
     let mut used_paths: HashSet<PathBuf> = HashSet::new();
+    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
     let mut assignments: Vec<PathBuf> = Vec::with_capacity(media.len());
 
     let mut skip_indices: HashSet<usize> = HashSet::new();
 
-    for m in media {
+    // Pre-populate used_paths with checkpoint files (fast, no I/O)
+    for path in already_written.values() {
+        used_paths.insert(path.clone());
+    }
+
+    // Pre-scan existing files in output directory to avoid repeated exists()/stat() calls
+    // HashMap<path, size> allows both existence check and size comparison in O(1)
+    let existing_files: HashMap<PathBuf, u64> = if output_dir.exists() {
+        scan_existing_files(output_dir)
+    } else {
+        HashMap::new()
+    };
+
+    for (idx, m) in media.iter().enumerate() {
+        // Fast path: if file was already written (from checkpoint), use saved path
+        if let Some(saved_path) = already_written.get(&m.zip_path) {
+            skip_indices.insert(idx);
+            assignments.push(saved_path.clone());
+            continue;
+        }
+
+        // Compute destination directory
         let sub_dir = if divide_to_dates {
             match &m.date {
                 Some(dt) => {
@@ -49,23 +102,27 @@ pub fn write_output(
             output_dir.to_path_buf()
         };
 
-        fs::create_dir_all(&sub_dir)?;
+        // Create directory only once per unique path
+        if !created_dirs.contains(&sub_dir) {
+            fs::create_dir_all(&sub_dir)?;
+            created_dirs.insert(sub_dir.clone());
+        }
 
         let base_dest = sub_dir.join(&m.filename);
         let counter = name_counters.entry(base_dest.clone()).or_insert(0);
 
         let can_use_base = *counter == 0 && !used_paths.contains(&base_dest);
-        let existing_is_same = can_use_base
-            && base_dest.exists()
-            && fs::metadata(&base_dest).map_or(false, |meta| meta.len() == m.size);
+        
+        // Check existing file using pre-scanned cache (O(1), no I/O)
+        let existing_size = existing_files.get(&base_dest).copied();
+        let existing_is_same = can_use_base && existing_size == Some(m.size);
 
+        // Skip if existing file has same size (already written in previous run)
         if existing_is_same {
-            skip_indices.insert(assignments.len());
+            skip_indices.insert(idx);
         }
 
-        let dest = if existing_is_same {
-            base_dest
-        } else if can_use_base && !base_dest.exists() {
+        let dest = if existing_is_same || (can_use_base && existing_size.is_none()) {
             base_dest
         } else {
             let stem = Path::new(&m.filename)
@@ -86,7 +143,9 @@ pub fn write_output(
                     format!("{}({}).{}", stem, counter, ext)
                 };
                 let candidate = sub_dir.join(&new_name);
-                if !used_paths.contains(&candidate) && !candidate.exists() {
+                // Use cache for existence check (O(1), no I/O)
+                let candidate_exists = existing_files.contains_key(&candidate);
+                if !used_paths.contains(&candidate) && !candidate_exists {
                     break candidate;
                 }
             }
@@ -96,10 +155,10 @@ pub fn write_output(
         assignments.push(dest);
     }
 
-    // Phase 2: Write files in parallel (skip unchanged files)
+    // Phase 2: Write files in parallel (skip unchanged files and checkpoint files)
     let work_count = media.len() - skip_indices.len();
     let total = work_count as u64;
-    let counter = AtomicU64::new(0);
+    let write_counter = AtomicU64::new(0);
 
     let num_threads = rayon::current_num_threads();
     let work: Vec<(usize, &Media, &PathBuf)> = media
@@ -110,13 +169,25 @@ pub fn write_output(
         .map(|(i, (m, d))| (i, m, d))
         .collect();
 
-    use std::collections::HashMap;
+    // For checkpoint tracking, we need thread-safe collection of written files
+    use std::sync::Mutex;
+    let written_files: Mutex<Vec<(String, PathBuf, u64)>> = Mutex::new(Vec::new());
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+
     let mut by_zip: HashMap<usize, Vec<(usize, &Media, &PathBuf)>> = HashMap::new();
     for &(i, m, d) in &work {
         by_zip.entry(m.zip_index).or_default().push((i, m, d));
     }
 
     for (zip_idx, entries) in &by_zip {
+        // Check cancellation before processing each zip
+        if let Some(token) = cancel_token {
+            if token.check().is_err() {
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                break;
+            }
+        }
+
         let chunk_size = (entries.len() + num_threads - 1) / num_threads;
         let chunks: Vec<&[(usize, &Media, &PathBuf)]> = entries.chunks(chunk_size).collect();
         let zip_path = &zip_paths[*zip_idx];
@@ -125,14 +196,25 @@ pub fn write_output(
             let handles: Vec<_> = chunks
                 .into_iter()
                 .map(|chunk| {
-                    let counter = &counter;
+                    let write_counter = &write_counter;
                     let zip_path = zip_path;
                     let progress = &progress;
+                    let written_files = &written_files;
+                    let cancel_token = cancel_token;
+                    let cancelled = &cancelled;
                     s.spawn(move || -> anyhow::Result<()> {
                         let file = File::open(zip_path)?;
                         let mut archive = ZipArchive::new(file)?;
 
                         for &(_i, m, dest) in chunk {
+                            // Check for cancellation
+                            if let Some(token) = cancel_token {
+                                if token.check().is_err() {
+                                    cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    return Ok(());
+                                }
+                            }
+
                             let mut entry = archive.by_name(&m.zip_path)?;
                             let mut out_file = io::BufWriter::new(File::create(dest)?);
                             io::copy(&mut entry, &mut out_file)?;
@@ -144,7 +226,14 @@ pub fn write_output(
                                 }
                             }
 
-                            let current = counter.fetch_add(1, Ordering::Relaxed);
+                            // Track written file for checkpoint
+                            written_files.lock().unwrap().push((
+                                m.zip_path.clone(),
+                                dest.clone(),
+                                m.size,
+                            ));
+
+                            let current = write_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             progress.report("write", current, total, "Writing files");
                         }
                         Ok(())
@@ -157,6 +246,19 @@ pub fn write_output(
             }
             Ok(())
         })?;
+    }
+
+    // Update checkpoint with written files
+    if let Some(saver) = checkpoint_saver {
+        let files = written_files.into_inner().unwrap();
+        for (zip_path, output_path, size) in files {
+            saver.mark_written(&zip_path, &output_path, size);
+        }
+        // Force save if cancelled
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            saver.force_save();
+            return Err(crate::checkpoint::CancelledError.into());
+        }
     }
 
     // Phase 3: Album output (if --album-dest album)

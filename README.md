@@ -21,6 +21,7 @@ Includes both a **GUI app** (Tauri) and a **CLI tool**.
 - **Date-based organization** - optional YYYY/MM subdirectory output
 - **Album support** - process named album folders, output as album directories or JSON index
 - **Incremental output** - skips files already present in the output directory (same name & size)
+- **Checkpoint/Resume** - gracefully pause with Ctrl+C (CLI) or Pause button (GUI), resume with `--resume`
 
 ## Installation
 
@@ -105,8 +106,24 @@ Options:
   --album-dest <MODE>         Album output mode: "year" (default) or "album"
   --album-link                Use symlinks instead of copies (--album-dest album only)
   --album-json <PATH>         Output path for albums.json (default: <output>/albums.json)
+  --resume                    Resume from checkpoint if available
+  --no-resume                 Ignore existing checkpoint and start fresh
   -h, --help                  Print help
   -V, --version               Print version
+```
+
+### Resume interrupted processing
+
+If processing is interrupted (Ctrl+C), a checkpoint file `.gpth-progress.json` is saved in the output directory. To resume:
+
+```sh
+gpth-rs-cli -o output_dir --resume takeout-*.zip
+```
+
+To start fresh and ignore any existing checkpoint:
+
+```sh
+gpth-rs-cli -o output_dir --no-resume takeout-*.zip
 ```
 
 ### Examples

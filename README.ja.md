@@ -21,6 +21,7 @@ Google Takeout の zip ファイルを**事前展開なしで直接処理**し�
 - **日付別整理** - YYYY/MM サブフォルダへの出力に対応
 - **アルバム対応** - 名前付きアルバムフォルダの処理、アルバムディレクトリまたは JSON インデックスとして出力
 - **差分出力** - 出力先に既に存在するファイル（同名・同サイズ）をスキップし、再実行が高速
+- **中断・再開** - Ctrl+C（CLI）または一時停止ボタン（GUI）で中断し、`--resume` で再開可能
 
 ## インストール
 
@@ -105,8 +106,24 @@ gpth-rs-cli [OPTIONS] -o <OUTPUT> <ZIP_FILES>...
   --album-dest <MODE>         アルバム出力モード: "year"（デフォルト）または "album"
   --album-link                コピーではなくシンボリックリンクを使用（--album-dest album 時のみ）
   --album-json <PATH>         albums.json の出力パス（デフォルト: <output>/albums.json）
+  --resume                    チェックポイントから再開
+  --no-resume                 既存のチェックポイントを無視して最初から開始
   -h, --help                  ヘルプを表示
   -V, --version               バージョンを表示
+```
+
+### 中断した処理の再開
+
+処理中に中断（Ctrl+C）すると、チェックポイントファイル `.gpth-progress.json` が出力先に保存されます。再開するには:
+
+```sh
+gpth-rs-cli -o 出力先 --resume takeout-*.zip
+```
+
+チェックポイントを無視して最初から開始するには:
+
+```sh
+gpth-rs-cli -o 出力先 --no-resume takeout-*.zip
 ```
 
 ### 使用例

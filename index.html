@@ -71,8 +71,14 @@
       </div>
     </section>
 
-    <!-- Run -->
-    <button id="run-btn" class="btn btn-accent btn-full" type="button">Run</button>
+    <!-- Run controls -->
+    <div class="run-controls">
+      <label class="option-chip resume-option" title="Resume from checkpoint if available">
+        <input type="checkbox" id="resume-check">
+        <span>Resume</span>
+      </label>
+      <button id="run-btn" class="btn btn-accent btn-run" type="button">Run</button>
+    </div>
 
     <!-- Progress -->
     <section id="progress-section" class="section" hidden>
@@ -84,6 +90,10 @@
         <div id="progress-fill" class="progress-fill"></div>
       </div>
       <div id="progress-detail" class="progress-detail"></div>
+      <div class="progress-controls">
+        <button id="pause-btn" class="btn btn-secondary btn-sm" type="button">Pause</button>
+        <button id="cancel-btn" class="btn btn-danger btn-sm" type="button">Cancel</button>
+      </div>
     </section>
 
     <!-- Result -->

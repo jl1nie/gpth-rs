@@ -23,8 +23,12 @@ const progressDetail = document.getElementById("progress-detail") as HTMLElement
 const resultSection = document.getElementById("result-section") as HTMLElement;
 const resultText = document.getElementById("result-text") as HTMLParagraphElement;
 const logOutput = document.getElementById("log-output") as HTMLPreElement;
+const resumeCheck = document.getElementById("resume-check") as HTMLInputElement;
+const pauseBtn = document.getElementById("pause-btn") as HTMLButtonElement;
+const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
 
 let zipFiles: string[] = [];
+let isPaused = false;
 
 // Album options toggle
 albumsCheck.onchange = () => {
@@ -148,6 +152,35 @@ listen<{ stage: string; current: number; total: number; message: string }>(
   }
 );
 
+// Pause/Resume
+pauseBtn.onclick = async () => {
+  try {
+    if (isPaused) {
+      await invoke("resume_process");
+      isPaused = false;
+      pauseBtn.textContent = "Pause";
+      progressStage.textContent = progressStage.textContent?.replace(" (Paused)", "") || "";
+    } else {
+      await invoke("pause_process");
+      isPaused = true;
+      pauseBtn.textContent = "Resume";
+      progressStage.textContent += " (Paused)";
+    }
+  } catch (e) {
+    log("Error: " + e);
+  }
+};
+
+// Cancel
+cancelBtn.onclick = async () => {
+  try {
+    await invoke("cancel_process");
+    progressStage.textContent = "Cancelling...";
+  } catch (e) {
+    log("Error: " + e);
+  }
+};
+
 // Run
 runBtn.onclick = async () => {
   if (zipFiles.length === 0) {
@@ -169,6 +202,10 @@ runBtn.onclick = async () => {
   progressStage.textContent = "Starting...";
   progressDetail.textContent = "";
   logOutput.textContent = "";
+  isPaused = false;
+  pauseBtn.textContent = "Pause";
+  pauseBtn.disabled = false;
+  cancelBtn.disabled = false;
 
   try {
     const result = await invoke<string>("run_process", {
@@ -182,18 +219,27 @@ runBtn.onclick = async () => {
         album_dest: albumDestAlbumCheck.checked ? "album" : "year",
         album_link: albumLinkCheck.checked,
       },
+      resume: resumeCheck.checked,
     });
     progressSection.hidden = true;
     resultSection.hidden = false;
     resultText.textContent = result;
     log("Done: " + result);
   } catch (e) {
-    log("Error: " + e);
-    progressStage.textContent = "Error";
-    progressFill.style.width = "100%";
-    progressFill.style.background = "var(--red)";
+    const errMsg = String(e);
+    log("Error: " + errMsg);
+    if (errMsg.includes("cancelled") || errMsg.includes("Cancelled")) {
+      progressStage.textContent = "Cancelled";
+      progressDetail.textContent = "Checkpoint saved. Enable 'Resume' to continue.";
+    } else {
+      progressStage.textContent = "Error";
+      progressFill.style.width = "100%";
+      progressFill.style.background = "var(--red)";
+    }
   } finally {
     runBtn.disabled = false;
     runBtn.textContent = "Run";
+    pauseBtn.disabled = true;
+    cancelBtn.disabled = true;
   }
 };
