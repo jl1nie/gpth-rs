@@ -10,6 +10,12 @@ use crate::media::Media;
 use crate::ThrottledProgress;
 
 /// Assign output paths, then write files.
+/// Result of the write phase.
+pub struct WriteResult {
+    pub assignments: Vec<PathBuf>,
+    pub files_skipped: u64,
+}
+
 pub fn write_output(
     media: &[Media],
     zip_paths: &[String],
@@ -18,7 +24,7 @@ pub fn write_output(
     album_dest: Option<&str>,
     album_link: bool,
     progress: &ThrottledProgress,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<WriteResult> {
     fs::create_dir_all(output_dir)?;
 
     // Phase 1: Assign destination paths (sequential - needs collision tracking)
@@ -26,6 +32,8 @@ pub fn write_output(
     let mut name_counters: HashMap<PathBuf, u32> = HashMap::new();
     let mut used_paths: HashSet<PathBuf> = HashSet::new();
     let mut assignments: Vec<PathBuf> = Vec::with_capacity(media.len());
+
+    let mut skip_indices: HashSet<usize> = HashSet::new();
 
     for m in media {
         let sub_dir = if divide_to_dates {
@@ -46,7 +54,18 @@ pub fn write_output(
         let base_dest = sub_dir.join(&m.filename);
         let counter = name_counters.entry(base_dest.clone()).or_insert(0);
 
-        let dest = if *counter == 0 && !base_dest.exists() && !used_paths.contains(&base_dest) {
+        let can_use_base = *counter == 0 && !used_paths.contains(&base_dest);
+        let existing_is_same = can_use_base
+            && base_dest.exists()
+            && fs::metadata(&base_dest).map_or(false, |meta| meta.len() == m.size);
+
+        if existing_is_same {
+            skip_indices.insert(assignments.len());
+        }
+
+        let dest = if existing_is_same {
+            base_dest
+        } else if can_use_base && !base_dest.exists() {
             base_dest
         } else {
             let stem = Path::new(&m.filename)
@@ -77,8 +96,9 @@ pub fn write_output(
         assignments.push(dest);
     }
 
-    // Phase 2: Write files in parallel
-    let total = media.len() as u64;
+    // Phase 2: Write files in parallel (skip unchanged files)
+    let work_count = media.len() - skip_indices.len();
+    let total = work_count as u64;
     let counter = AtomicU64::new(0);
 
     let num_threads = rayon::current_num_threads();
@@ -86,6 +106,7 @@ pub fn write_output(
         .iter()
         .zip(assignments.iter())
         .enumerate()
+        .filter(|(i, _)| !skip_indices.contains(i))
         .map(|(i, (m, d))| (i, m, d))
         .collect();
 
@@ -143,7 +164,10 @@ pub fn write_output(
         write_album_folders(media, &assignments, output_dir, album_link)?;
     }
 
-    Ok(assignments)
+    Ok(WriteResult {
+        assignments,
+        files_skipped: skip_indices.len() as u64,
+    })
 }
 
 /// Write album folders under `<output>/albums/<album_name>/`

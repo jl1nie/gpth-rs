@@ -27,8 +27,8 @@ async fn run_process(
         .map_err(|e| e.to_string())?;
 
     Ok(format!(
-        "{} media files processed, {} duplicates removed, {} files written",
-        result.total_media, result.duplicates_removed, result.files_written
+        "{} media files processed, {} duplicates removed, {} files written, {} skipped",
+        result.total_media, result.duplicates_removed, result.files_written, result.files_skipped
     ))
 }
 

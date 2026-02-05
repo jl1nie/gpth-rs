@@ -20,6 +20,7 @@ Includes both a **GUI app** (Tauri) and a **CLI tool**.
 - **Edited file filtering** - skip `-edited`, `-bearbeitet`, `-編集済み`, etc.
 - **Date-based organization** - optional YYYY/MM subdirectory output
 - **Album support** - process named album folders, output as album directories or JSON index
+- **Incremental output** - skips files already present in the output directory (same name & size)
 
 ## Installation
 
@@ -194,7 +195,7 @@ When `--albums` is enabled, an `albums.json` file is written mapping album names
    - Filename patterns (`IMG_20230101_120000`, `Screenshot_20230101-120000`, etc.)
 3. **Album merge** (with `--albums`) - Matches album entries to year-folder media by filename + size. Unmatched album-only files are added as new media.
 4. **Deduplication** - Groups by file size, then SHA-256 hash to remove duplicates
-5. **Write** - Streams each file from zip to output directory, sets file modification time. Optionally writes album folders and `albums.json`.
+5. **Write** - Streams each file from zip to output directory, sets file modification time. Files already present with matching name and size are skipped. Optionally writes album folders and `albums.json`.
 
 ## Project Structure
 

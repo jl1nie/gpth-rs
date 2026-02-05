@@ -49,6 +49,8 @@ pub struct ProcessResult {
     pub duplicates_removed: u64,
     pub files_written: u64,
     #[serde(default)]
+    pub files_skipped: u64,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
@@ -98,6 +100,7 @@ pub fn process(
             total_media: 0,
             duplicates_removed: 0,
             files_written: 0,
+            files_skipped: 0,
             warnings: vec![],
         });
     }
@@ -363,7 +366,7 @@ pub fn process(
     } else {
         None
     };
-    let assignments = writer::write_output(
+    let write_result = writer::write_output(
         &media_list,
         &options.zip_files,
         &options.output,
@@ -372,6 +375,8 @@ pub fn process(
         options.album_link,
         &tp,
     )?;
+    let assignments = write_result.assignments;
+    let files_skipped = write_result.files_skipped;
 
     // Write albums.json if any albums exist
     if options.albums {
@@ -386,7 +391,8 @@ pub fn process(
     Ok(ProcessResult {
         total_media: before as u64,
         duplicates_removed,
-        files_written: media_list.len() as u64,
+        files_written: media_list.len() as u64 - files_skipped,
+        files_skipped,
         warnings,
     })
 }

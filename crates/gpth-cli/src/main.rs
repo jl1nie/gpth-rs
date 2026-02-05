@@ -63,10 +63,11 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     eprintln!(
-        "Done! {} media files, {} duplicates removed, {} files written ({:.2}s)",
+        "Done! {} media files, {} duplicates removed, {} files written, {} skipped ({:.2}s)",
         result.total_media,
         result.duplicates_removed,
         result.files_written,
+        result.files_skipped,
         t_total.elapsed().as_secs_f64()
     );
 
