@@ -102,7 +102,7 @@ pub fn deduplicate(mut media: Vec<Media>, zip_files: &[String], progress: &Throt
 
                             for &midx in chunk {
                                 let m = &media[midx];
-                                match archive.by_name(&m.zip_path) {
+                                match archive.by_index(m.entry_index) {
                                     Ok(entry) => {
                                         match compute_streaming_hash(entry) {
                                             Ok(hash) => results.push((midx, hash)),

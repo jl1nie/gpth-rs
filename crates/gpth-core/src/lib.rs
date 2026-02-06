@@ -34,6 +34,8 @@ pub struct ProcessOptions {
     pub album_link: bool,
     #[serde(default)]
     pub album_json: Option<PathBuf>,
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,7 +265,7 @@ pub fn process_with_control(
                                 for &midx in chunk {
                                     let m = &media[midx];
                                     let result = archive
-                                        .by_name(&m.zip_path)
+                                        .by_index(m.entry_index)
                                         .ok()
                                         .and_then(|mut entry| {
                                             let mut bytes = Vec::with_capacity(entry.size() as usize);
@@ -407,7 +409,7 @@ pub fn process_with_control(
                                     for &midx in chunk {
                                         let m = &media[midx];
                                         let result = archive
-                                            .by_name(&m.zip_path)
+                                            .by_index(m.entry_index)
                                             .ok()
                                             .and_then(|mut entry| {
                                                 let mut bytes =
@@ -501,6 +503,7 @@ pub fn process_with_control(
         options.divide_to_dates,
         album_dest_opt,
         options.album_link,
+        options.force,
         &tp,
         checkpoint_saver.as_mut(),
         control.cancel_token.as_ref(),

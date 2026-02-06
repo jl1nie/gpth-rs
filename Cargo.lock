@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "gpth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gpth-core",
  "serde",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "gpth-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "gpth-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono",

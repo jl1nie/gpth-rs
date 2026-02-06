@@ -18,10 +18,15 @@ impl Default for ProcessState {
 #[tauri::command]
 async fn run_process(
     options: ProcessOptions,
-    resume: bool,
+    force: bool,
     window: tauri::Window,
     state: State<'_, Arc<ProcessState>>,
 ) -> Result<String, String> {
+    // If force mode, delete any existing checkpoint
+    if force {
+        let _ = gpth_core::Checkpoint::delete(&options.output);
+    }
+
     // Create and store cancellation token
     let cancel_token = CancellationToken::new();
     {
@@ -44,8 +49,9 @@ async fn run_process(
             );
         };
 
+        // Auto-resume unless force mode
         let control = ProcessControl::new()
-            .with_resume(resume)
+            .with_resume(!force)
             .with_cancel_token(cancel_token);
 
         let result = gpth_core::process_with_control(&options, &control, &cb);

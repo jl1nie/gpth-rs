@@ -23,7 +23,7 @@ const progressDetail = document.getElementById("progress-detail") as HTMLElement
 const resultSection = document.getElementById("result-section") as HTMLElement;
 const resultText = document.getElementById("result-text") as HTMLParagraphElement;
 const logOutput = document.getElementById("log-output") as HTMLPreElement;
-const resumeCheck = document.getElementById("resume-check") as HTMLInputElement;
+const forceCheck = document.getElementById("force-check") as HTMLInputElement;
 const pauseBtn = document.getElementById("pause-btn") as HTMLButtonElement;
 const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
 
@@ -219,7 +219,7 @@ runBtn.onclick = async () => {
         album_dest: albumDestAlbumCheck.checked ? "album" : "year",
         album_link: albumLinkCheck.checked,
       },
-      resume: resumeCheck.checked,
+      force: forceCheck.checked,
     });
     progressSection.hidden = true;
     resultSection.hidden = false;

@@ -45,6 +45,7 @@ pub fn write_output(
     divide_to_dates: bool,
     album_dest: Option<&str>,
     album_link: bool,
+    force: bool,
     progress: &ThrottledProgress,
     checkpoint_saver: Option<&mut crate::checkpoint::CheckpointSaver>,
     cancel_token: Option<&crate::checkpoint::CancellationToken>,
@@ -73,8 +74,16 @@ pub fn write_output(
     }
 
     // Pre-scan existing files in output directory to avoid repeated exists()/stat() calls
-    // HashMap<path, size> allows both existence check and size comparison in O(1)
-    let existing_files: HashMap<PathBuf, u64> = if output_dir.exists() {
+    // Skip scanning if:
+    // - force mode (overwrite all)
+    // - checkpoint has written files (they're already tracked)
+    let existing_files: HashMap<PathBuf, u64> = if force {
+        // Force mode - skip all existence checks, overwrite everything
+        HashMap::new()
+    } else if !already_written.is_empty() {
+        // Resuming from checkpoint - skip scan, checkpoint tracks all written files
+        HashMap::new()
+    } else if output_dir.exists() {
         scan_existing_files(output_dir)
     } else {
         HashMap::new()
@@ -215,7 +224,7 @@ pub fn write_output(
                                 }
                             }
 
-                            let mut entry = archive.by_name(&m.zip_path)?;
+                            let mut entry = archive.by_index(m.entry_index)?;
                             let mut out_file = io::BufWriter::new(File::create(dest)?);
                             io::copy(&mut entry, &mut out_file)?;
 

@@ -106,24 +106,19 @@ Options:
   --album-dest <MODE>         Album output mode: "year" (default) or "album"
   --album-link                Use symlinks instead of copies (--album-dest album only)
   --album-json <PATH>         Output path for albums.json (default: <output>/albums.json)
-  --resume                    Resume from checkpoint if available
-  --no-resume                 Ignore existing checkpoint and start fresh
+  --force                     Overwrite all, ignore checkpoint (fastest)
   -h, --help                  Print help
   -V, --version               Print version
 ```
 
 ### Resume interrupted processing
 
-If processing is interrupted (Ctrl+C), a checkpoint file `.gpth-progress.json` is saved in the output directory. To resume:
+If processing is interrupted (Ctrl+C), a checkpoint file `.gpth-progress.json` is saved. Simply run the same command again to resume automatically.
+
+To start fresh and ignore checkpoint:
 
 ```sh
-gpth-rs-cli -o output_dir --resume takeout-*.zip
-```
-
-To start fresh and ignore any existing checkpoint:
-
-```sh
-gpth-rs-cli -o output_dir --no-resume takeout-*.zip
+gpth-rs-cli -o output_dir --force takeout-*.zip
 ```
 
 ### Examples

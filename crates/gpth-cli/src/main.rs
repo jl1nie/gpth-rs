@@ -41,18 +41,19 @@ struct Cli {
     #[arg(long)]
     album_json: Option<std::path::PathBuf>,
 
-    /// Resume from checkpoint if available
+    /// Overwrite all files, ignore checkpoint and skip existence checks (fastest)
     #[arg(long)]
-    resume: bool,
-
-    /// Ignore existing checkpoint and start fresh
-    #[arg(long, conflicts_with = "resume")]
-    no_resume: bool,
+    force: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let t_total = std::time::Instant::now();
+
+    // --force: delete checkpoint and skip all existence checks
+    if cli.force {
+        let _ = gpth_core::Checkpoint::delete(&cli.output);
+    }
 
     let options = gpth_core::ProcessOptions {
         zip_files: cli.zip_files,
@@ -64,6 +65,7 @@ fn main() -> anyhow::Result<()> {
         album_dest: cli.album_dest,
         album_link: cli.album_link,
         album_json: cli.album_json,
+        force: cli.force,
     };
 
     // Set up cancellation token and Ctrl+C handler
@@ -75,17 +77,9 @@ fn main() -> anyhow::Result<()> {
         token_clone.cancel();
     })?;
 
-    // Determine resume mode
-    let resume = if cli.no_resume {
-        // Delete existing checkpoint if --no-resume
-        let _ = gpth_core::Checkpoint::delete(&cli.output);
-        false
-    } else {
-        cli.resume
-    };
-
+    // Auto-resume: always try to resume from checkpoint (unless --force)
     let control = gpth_core::ProcessControl::new()
-        .with_resume(resume)
+        .with_resume(!cli.force)
         .with_cancel_token(cancel_token);
 
     let result = gpth_core::process_with_control(&options, &control, &|stage, current, total, message| {
@@ -109,7 +103,7 @@ fn main() -> anyhow::Result<()> {
         Err(e) => {
             if e.downcast_ref::<gpth_core::CancelledError>().is_some() {
                 eprintln!("Processing interrupted. Checkpoint saved.");
-                eprintln!("Run with --resume to continue from where you left off.");
+                eprintln!("Run again to continue, or use --force to start fresh.");
                 std::process::exit(130); // Standard exit code for Ctrl+C
             } else {
                 Err(e)

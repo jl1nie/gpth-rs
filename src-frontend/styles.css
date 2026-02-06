@@ -155,10 +155,6 @@ body {
   align-items: center;
 }
 
-.resume-option {
-  flex-shrink: 0;
-}
-
 /* ── Input ────────────────────────────── */
 
 input[type="text"] {

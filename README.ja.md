@@ -106,24 +106,19 @@ gpth-rs-cli [OPTIONS] -o <OUTPUT> <ZIP_FILES>...
   --album-dest <MODE>         アルバム出力モード: "year"（デフォルト）または "album"
   --album-link                コピーではなくシンボリックリンクを使用（--album-dest album 時のみ）
   --album-json <PATH>         albums.json の出力パス（デフォルト: <output>/albums.json）
-  --resume                    チェックポイントから再開
-  --no-resume                 既存のチェックポイントを無視して最初から開始
+  --force                     すべて上書き、チェックポイント無視（最速）
   -h, --help                  ヘルプを表示
   -V, --version               バージョンを表示
 ```
 
 ### 中断した処理の再開
 
-処理中に中断（Ctrl+C）すると、チェックポイントファイル `.gpth-progress.json` が出力先に保存されます。再開するには:
-
-```sh
-gpth-rs-cli -o 出力先 --resume takeout-*.zip
-```
+処理中に中断（Ctrl+C）すると、チェックポイントファイル `.gpth-progress.json` が保存されます。同じコマンドを再実行すれば自動的に再開されます。
 
 チェックポイントを無視して最初から開始するには:
 
 ```sh
-gpth-rs-cli -o 出力先 --no-resume takeout-*.zip
+gpth-rs-cli -o 出力先 --force takeout-*.zip
 ```
 
 ### 使用例

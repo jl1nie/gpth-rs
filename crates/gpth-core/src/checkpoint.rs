@@ -349,6 +349,7 @@ mod tests {
             album_dest: "year".to_string(),
             album_link: false,
             album_json: None,
+            force: false,
         }
     }
 
@@ -383,6 +384,7 @@ mod tests {
             album_dest: "year".to_string(),
             album_link: false,
             album_json: None,
+            force: false,
         };
 
         let mut checkpoint = Checkpoint::new(&options).unwrap();
